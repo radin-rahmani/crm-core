@@ -1,8 +1,14 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
 # Binaries
 *.exe
 *.out
-app
-server
+/app
+/server
+/cmd/server/server
 
 # Environment
 .env
