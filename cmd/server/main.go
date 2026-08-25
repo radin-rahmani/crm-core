@@ -16,6 +16,7 @@ import (
 	"github.com/go-redis/redis/v8"
 	_ "github.com/lib/pq"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/reflection"
 )
 
 func main() {
@@ -24,9 +25,23 @@ func main() {
 		dbURL = "postgres://postgres:password@postgres:5432/crm_db?sslmode=disable"
 	}
 
-	db, err := sql.Open("postgres", dbURL)
+	var db *sql.DB
+	var err error
+
+	for i := 1; i <= 10; i++ {
+		db, err = sql.Open("postgres", dbURL)
+		if err == nil {
+			err = db.Ping()
+		}
+		if err == nil {
+			break
+		}
+		log.Printf("Waiting for database connection... attempt %d/10 (error: %v)", i, err)
+		time.Sleep(2 * time.Second)
+	}
+
 	if err != nil {
-		log.Fatalf("Failed to connect to database: %v", err)
+		log.Fatalf("Could not connect to database after retries: %v", err)
 	}
 	defer func() {
 		if err := db.Close(); err != nil {
@@ -78,6 +93,9 @@ func main() {
 
 	grpcServer := grpc.NewServer()
 	pb.RegisterLoggerServiceServer(grpcServer, grpcHandler)
+
+	reflection.Register(grpcServer)
+
 	log.Println("gRPC Server running on :50051")
 	if err := grpcServer.Serve(lis); err != nil {
 		log.Fatalf("gRPC server failed: %v", err)
