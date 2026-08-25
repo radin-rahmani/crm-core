@@ -1,0 +1,21 @@
+syntax = "proto3";
+
+package logger;
+
+option go_package = "crm-core/proto";
+
+message LogRequest {
+  string user_id = 1;
+  string action = 2;
+  string details = 3;
+  int64 timestamp = 4;
+}
+
+message LogResponse {
+  int32 processed_count = 1;
+  bool success = 2;
+}
+
+service LoggerService {
+  rpc StreamLogs(stream LogRequest) returns (LogResponse);
+}

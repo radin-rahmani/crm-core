@@ -1,0 +1,15 @@
+# Binaries
+*.exe
+*.out
+app
+server
+
+# Environment
+.env
+
+# IDEs
+.idea/
+.vscode/
+
+# Docker volumes
+.vector/
