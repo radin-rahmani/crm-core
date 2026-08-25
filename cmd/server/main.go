@@ -26,11 +26,17 @@ func main() {
 
 	db, err := sql.Open("postgres", dbURL)
 	if err != nil {
-		log.Fatal(err)
+		log.Fatalf("Failed to connect to database: %v", err)
 	}
-	defer db.Close()
+	defer func() {
+		if err := db.Close(); err != nil {
+			log.Printf("Error closing database: %v", err)
+		}
+	}()
 
-	initDB(db)
+	if err := initDB(db); err != nil {
+		log.Fatalf("Failed to initialize database: %v", err)
+	}
 
 	redisAddr := os.Getenv("REDIS_HOST")
 	if redisAddr == "" {
@@ -78,7 +84,12 @@ func main() {
 	}
 }
 
-func initDB(db *sql.DB) {
-	db.Exec(`CREATE TABLE IF NOT EXISTS customers (id VARCHAR(36) PRIMARY KEY, name VARCHAR(100), email VARCHAR(100) UNIQUE, created_at TIMESTAMP);`)
-	db.Exec(`CREATE TABLE IF NOT EXISTS logs (id SERIAL PRIMARY KEY, user_id VARCHAR(36), action VARCHAR(50), details TEXT, created_at TIMESTAMP);`)
+func initDB(db *sql.DB) error {
+	_, err := db.Exec(`CREATE TABLE IF NOT EXISTS customers (id VARCHAR(36) PRIMARY KEY, name VARCHAR(100), email VARCHAR(100) UNIQUE, created_at TIMESTAMP);`)
+	if err != nil {
+		return err
+	}
+
+	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS logs (id SERIAL PRIMARY KEY, user_id VARCHAR(36), action VARCHAR(50), details TEXT, created_at TIMESTAMP);`)
+	return err
 }
