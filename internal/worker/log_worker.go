@@ -4,6 +4,7 @@ import (
 	"crm-core/internal/domain"
 	"fmt"
 	"log"
+	"sync"
 	"time"
 )
 
@@ -13,6 +14,7 @@ type LogWorkerPool struct {
 	batchSize     int
 	flushInterval time.Duration
 	workerCount   int
+	wg            sync.WaitGroup
 }
 
 func NewLogWorkerPool(repo domain.LogRepository, bufferSize, batchSize, workerCount int, flushInterval time.Duration) *LogWorkerPool {
@@ -31,18 +33,38 @@ func (wp *LogWorkerPool) Enqueue(entry domain.LogEntry) {
 
 func (wp *LogWorkerPool) Start() {
 	for i := 0; i < wp.workerCount; i++ {
+		wp.wg.Add(1)
 		go wp.worker()
 	}
 }
 
+// Stop closes the intake channel and blocks until every worker has drained
+// its remaining buffered entries and flushed them to the repository. Callers
+// must ensure no further Enqueue calls happen after Stop is invoked (i.e.
+// stop the HTTP/gRPC servers first).
+func (wp *LogWorkerPool) Stop() {
+	close(wp.logChannel)
+	wp.wg.Wait()
+}
+
 func (wp *LogWorkerPool) worker() {
+	defer wp.wg.Done()
+
 	var batch []domain.LogEntry
 	ticker := time.NewTicker(wp.flushInterval)
 	defer ticker.Stop()
 
 	for {
 		select {
-		case logEntry := <-wp.logChannel:
+		case logEntry, ok := <-wp.logChannel:
+			if !ok {
+				// Channel closed (Stop was called): flush whatever is left
+				// and exit the worker.
+				if len(batch) > 0 {
+					wp.flushWithRetry(batch)
+				}
+				return
+			}
 			batch = append(batch, logEntry)
 			if len(batch) >= wp.batchSize {
 				wp.flushWithRetry(batch)

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crm-core/internal/delivery"
 	"crm-core/internal/repository"
 	"crm-core/internal/service"
@@ -11,6 +12,8 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/go-redis/redis/v8"
@@ -43,11 +46,6 @@ func main() {
 	if err != nil {
 		log.Fatalf("Could not connect to database after retries: %v", err)
 	}
-	defer func() {
-		if err := db.Close(); err != nil {
-			log.Printf("Error closing database: %v", err)
-		}
-	}()
 
 	if err := initDB(db); err != nil {
 		log.Fatalf("Failed to initialize database: %v", err)
@@ -76,12 +74,22 @@ func main() {
 
 	httpHandler := delivery.NewHTTPHandler(customerService)
 	grpcHandler := delivery.NewGRPCHandler(workerPool)
+	healthHandler := delivery.NewHealthHandler(db, rdb)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/customers", httpHandler.CreateCustomer)
+	mux.HandleFunc("/customers/", httpHandler.GetCustomer)
+	mux.HandleFunc("/healthz", healthHandler.Liveness)
+	mux.HandleFunc("/readyz", healthHandler.Readiness)
+
+	httpServer := &http.Server{
+		Addr:    ":8080",
+		Handler: mux,
+	}
 
 	go func() {
-		http.HandleFunc("/customers", httpHandler.CreateCustomer)
-		http.HandleFunc("/customers/", httpHandler.GetCustomer)
 		log.Println("HTTP Server running on :8080")
-		if err := http.ListenAndServe(":8080", nil); err != nil {
+		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("HTTP server failed: %v", err)
 		}
 	}()
@@ -93,12 +101,50 @@ func main() {
 
 	grpcServer := grpc.NewServer()
 	pb.RegisterLoggerServiceServer(grpcServer, grpcHandler)
-
 	reflection.Register(grpcServer)
 
-	log.Println("gRPC Server running on :50051")
-	if err := grpcServer.Serve(lis); err != nil {
-		log.Fatalf("gRPC server failed: %v", err)
+	go func() {
+		log.Println("gRPC Server running on :50051")
+		if err := grpcServer.Serve(lis); err != nil {
+			log.Printf("gRPC server stopped: %v", err)
+		}
+	}()
+
+	// Block until we receive a termination signal (e.g. from `docker stop`
+	// or a Kubernetes pod eviction).
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	sig := <-sigCh
+	log.Printf("Received signal %v, shutting down gracefully...", sig)
+
+	shutdown(httpServer, grpcServer, workerPool, db, rdb)
+	log.Println("Shutdown complete.")
+}
+
+// shutdown drains the service in dependency order: stop accepting new work
+// first, then let in-flight work finish, then flush buffered async work,
+// and finally close the underlying connections.
+func shutdown(httpServer *http.Server, grpcServer *grpc.Server, workerPool *worker.LogWorkerPool, db *sql.DB, rdb *redis.Client) {
+	// 1. Stop accepting new HTTP requests; let in-flight ones finish (bounded wait).
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := httpServer.Shutdown(ctx); err != nil {
+		log.Printf("HTTP server shutdown error: %v", err)
+	}
+
+	// 2. Stop accepting new gRPC streams; let in-flight ones finish.
+	grpcServer.GracefulStop()
+
+	// 3. Drain the async log worker pool so buffered audit logs aren't lost.
+	log.Println("Draining log worker pool...")
+	workerPool.Stop()
+
+	// 4. Close downstream connections last, now that nothing needs them.
+	if err := db.Close(); err != nil {
+		log.Printf("Error closing database: %v", err)
+	}
+	if err := rdb.Close(); err != nil {
+		log.Printf("Error closing redis: %v", err)
 	}
 }
 
