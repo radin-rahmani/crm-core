@@ -1,0 +1,40 @@
+# Redis is used purely as a cache here (RedisCustomerAdapter), so unlike
+# Postgres it doesn't need a PersistentVolumeClaim — losing the cache on
+# restart just means the next few reads fall back to Postgres.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+  namespace: crm-core
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redis
+  template:
+    metadata:
+      labels:
+        app: redis
+    spec:
+      containers:
+        - name: redis
+          image: redis:7-alpine
+          ports:
+            - containerPort: 6379
+          readinessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          livenessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 50m
+              memory: 32Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi

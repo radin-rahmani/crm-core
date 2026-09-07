@@ -1,0 +1,67 @@
+# NOTE: a real production Postgres would typically run as a StatefulSet
+# (stable network identity + per-replica storage), not a Deployment. We use
+# a single-replica Deployment here for simplicity — Postgres itself isn't
+# horizontally scalable this way, so replicas must stay at 1 or data will
+# be corrupted by two instances writing to the same volume.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  namespace: crm-core
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate # avoid two Postgres pods ever attaching to the same PVC at once
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:15-alpine
+          ports:
+            - containerPort: 5432
+          env:
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: crm-core-secrets
+                  key: POSTGRES_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: crm-core-secrets
+                  key: POSTGRES_PASSWORD
+            - name: POSTGRES_DB
+              valueFrom:
+                secretKeyRef:
+                  name: crm-core-secrets
+                  key: POSTGRES_DB
+          volumeMounts:
+            - name: postgres-storage
+              mountPath: /var/lib/postgresql/data
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "postgres", "-d", "crm_db"]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-U", "postgres", "-d", "crm_db"]
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+      volumes:
+        - name: postgres-storage
+          persistentVolumeClaim:
+            claimName: postgres-pvc

@@ -1,0 +1,13 @@
+# The app reaches Redis at the DNS name "redis:6379" — matches
+# REDIS_HOST in configmap.yaml.
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  namespace: crm-core
+spec:
+  selector:
+    app: redis
+  ports:
+    - port: 6379
+      targetPort: 6379

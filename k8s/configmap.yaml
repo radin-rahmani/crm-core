@@ -1,0 +1,9 @@
+# Non-secret configuration. Anything that would be sensitive (credentials,
+# connection strings with passwords) belongs in secret.yaml instead.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: crm-core-config
+  namespace: crm-core
+data:
+  REDIS_HOST: "redis:6379"

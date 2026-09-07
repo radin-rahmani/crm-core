@@ -1,0 +1,63 @@
+# replicas: 2 deliberately, to prove the app is stateless/horizontally
+# scalable (no in-memory state that breaks across pods) and to exercise the
+# graceful shutdown + readiness probe behavior during rollouts.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: crm-core
+  namespace: crm-core
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: crm-core
+  template:
+    metadata:
+      labels:
+        app: crm-core
+    spec:
+      containers:
+        - name: crm-core
+          image: crm-core:v2-advisory-lock-fix
+          imagePullPolicy: IfNotPresent # local-only image, not pulled from a registry
+          ports:
+            - name: http
+              containerPort: 8080
+            - name: grpc
+              containerPort: 50051
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: crm-core-secrets
+                  key: DATABASE_URL
+            - name: REDIS_HOST
+              valueFrom:
+                configMapKeyRef:
+                  name: crm-core-config
+                  key: REDIS_HOST
+          # Liveness: is the process itself alive? If this fails repeatedly,
+          # k8s kills and restarts the pod.
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          # Readiness: can this pod currently serve traffic (are Postgres and
+          # Redis reachable)? If this fails, k8s stops routing traffic to it
+          # WITHOUT restarting it — gives dependencies time to recover.
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: 100m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+      terminationGracePeriodSeconds: 30

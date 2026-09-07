@@ -1,0 +1,13 @@
+# ClusterIP (default, internal-only) service. The app reaches Postgres at
+# the DNS name "postgres" (matches this Service's name) via DATABASE_URL.
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: crm-core
+spec:
+  selector:
+    app: postgres
+  ports:
+    - port: 5432
+      targetPort: 5432

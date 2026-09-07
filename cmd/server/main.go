@@ -148,12 +148,44 @@ func shutdown(httpServer *http.Server, grpcServer *grpc.Server, workerPool *work
 	}
 }
 
+// initDB creates the schema if it doesn't exist yet. Since multiple replicas
+// of this service can start concurrently against a fresh database (e.g. a
+// Kubernetes Deployment with replicas > 1), plain "CREATE TABLE IF NOT
+// EXISTS" statements are not safe: two replicas can both pass the "does this
+// exist" check before either finishes creating the table, causing a
+// duplicate-key error on Postgres' internal catalog (pg_type).
+//
+// A Postgres session-level advisory lock (pg_advisory_lock) serializes this
+// setup step across replicas: whichever replica gets the lock first creates
+// the tables while the others block, then each of the others acquires the
+// lock in turn and finds the tables already exist (a no-op).
+//
+// Session-level advisory locks are tied to a single backend connection, so
+// we must pin one dedicated *sql.Conn for the lock/create/unlock sequence
+// instead of using db.Exec (which can pull a different pooled connection
+// for each call, in which case the lock wouldn't actually serialize
+// anything).
+const initDBLockKey = 727142
+
 func initDB(db *sql.DB) error {
-	_, err := db.Exec(`CREATE TABLE IF NOT EXISTS customers (id VARCHAR(36) PRIMARY KEY, name VARCHAR(100), email VARCHAR(100) UNIQUE, created_at TIMESTAMP);`)
+	ctx := context.Background()
+
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+
+	if _, err := conn.ExecContext(ctx, `SELECT pg_advisory_lock($1)`, initDBLockKey); err != nil {
+		return err
+	}
+	defer conn.ExecContext(ctx, `SELECT pg_advisory_unlock($1)`, initDBLockKey)
+
+	_, err = conn.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS customers (id VARCHAR(36) PRIMARY KEY, name VARCHAR(100), email VARCHAR(100) UNIQUE, created_at TIMESTAMP);`)
 	if err != nil {
 		return err
 	}
 
-	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS logs (id SERIAL PRIMARY KEY, user_id VARCHAR(36), action VARCHAR(50), details TEXT, created_at TIMESTAMP);`)
+	_, err = conn.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS logs (id SERIAL PRIMARY KEY, user_id VARCHAR(36), action VARCHAR(50), details TEXT, created_at TIMESTAMP);`)
 	return err
 }
